@@ -1,0 +1,14 @@
+[
+  {
+    "frame": 24,
+    "time_sec": 2.4,
+    "distance": 1.92,
+    "threshold": 5
+  },
+  {
+    "frame": 25,
+    "time_sec": 2.5,
+    "distance": 3.66,
+    "threshold": 5
+  }
+]
