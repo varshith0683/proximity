@@ -1,0 +1,10 @@
+.venv
+_output
+__output
+build
+data
+dist
+_output
+build_exe.py
+PersonDistanceDetector.spec
+yolov8n.pt
