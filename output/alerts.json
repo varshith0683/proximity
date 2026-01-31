@@ -1,17 +1,17 @@
 [
   {
-    "time_sec": 32.43,
-    "distance": 4.82,
+    "time_sec": 38.17,
+    "distance": 3.84,
     "threshold": 5
   },
   {
-    "time_sec": 82.21,
-    "distance": 5.57,
+    "time_sec": 41.51,
+    "distance": 6.04,
     "threshold": 10
   },
   {
-    "time_sec": 85.59,
-    "distance": 4.36,
-    "threshold": 5
+    "time_sec": 51.84,
+    "distance": 5.1,
+    "threshold": 10
   }
 ]
