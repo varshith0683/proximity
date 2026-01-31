@@ -1,32 +1,17 @@
 [
   {
-    "processed_frame": 7,
-    "time_sec": 0.47,
-    "distance": 3.85,
+    "time_sec": 32.43,
+    "distance": 4.82,
     "threshold": 5
   },
   {
-    "processed_frame": 9,
-    "time_sec": 0.6,
-    "distance": 6.4,
+    "time_sec": 82.21,
+    "distance": 5.57,
     "threshold": 10
   },
   {
-    "processed_frame": 12,
-    "time_sec": 0.8,
-    "distance": 5.32,
-    "threshold": 10
-  },
-  {
-    "processed_frame": 13,
-    "time_sec": 0.87,
-    "distance": 5.83,
-    "threshold": 10
-  },
-  {
-    "processed_frame": 14,
-    "time_sec": 0.93,
-    "distance": 3.98,
+    "time_sec": 85.59,
+    "distance": 4.36,
     "threshold": 5
   }
 ]
