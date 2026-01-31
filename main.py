@@ -21,13 +21,13 @@ class PersonDistanceDetector:
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.frame_skip = max(1, self.source_fps // self.target_fps)
-        self.effective_fps = self.target_fps
+        self.effective_fps = self.source_fps / self.frame_skip
         self.recording_path = f"{output_dir}/webcam_recording.mp4"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.out = cv2.VideoWriter(self.recording_path, fourcc, self.target_fps, (self.width, self.height))
+        self.out = cv2.VideoWriter(self.recording_path, fourcc, self.effective_fps, (self.width, self.height))
         self.pre_event_seconds = 5
         self.post_event_seconds = 5
-        self.frame_buffer = deque(maxlen=self.pre_event_seconds * self.effective_fps)
+        self.frame_buffer = deque(maxlen=int(self.pre_event_seconds * self.effective_fps))
         self.person_distance_history = {}
         self.alert_cooldown = {}
         self.alerts_log = []
@@ -86,10 +86,7 @@ class PersonDistanceDetector:
             self.person_distance_history[pid] = deque(maxlen=10)
             self.alert_cooldown[pid] = -100
         hist = self.person_distance_history[pid]
-        if len(hist) > 0:
-            prev = hist[-1]
-        else:
-            prev = 999
+        prev = hist[-1] if len(hist) > 0 else 999
         hist.append(distance)
         for t in [5, 10]:
             if (prev > t and distance <= t) or (prev == 999 and distance <= t):
@@ -118,7 +115,7 @@ class PersonDistanceDetector:
             if crossed:
                 self.log_alert(dist, crossed)
                 alert_triggered = True
-                self.post_event_frames_remaining = self.post_event_seconds * self.effective_fps
+                self.post_event_frames_remaining = int(self.post_event_seconds * self.effective_fps)
                 self.current_alert_distance = dist
                 self.current_alert_threshold = crossed
             color = (0, 255, 0)
@@ -141,7 +138,6 @@ class PersonDistanceDetector:
                 cv2.putText(frame, "ALERT", (10, self.height - 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
             out.write(frame)
         out.release()
-        print(f"Evidence clip saved: {output_path}")
         self.current_alert_distance = None
         self.current_alert_threshold = None
 
@@ -177,7 +173,6 @@ class PersonDistanceDetector:
             cv2.destroyAllWindows()
         with open(f"{self.output_dir}/alerts.json", "w") as f:
             json.dump(self.alerts_log, f, indent=2)
-        print(f"Alerts saved: {self.output_dir}/alerts.json ({len(self.alerts_log)} alerts)")
 
 if __name__ == "__main__":
     detector = PersonDistanceDetector(camera_index=0, output_dir="output", target_fps=15)
