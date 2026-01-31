@@ -7,10 +7,10 @@ import os
 import time
 
 class PersonDistanceDetector:
-    def __init__(self, camera_index=0, output_dir="output", target_fps=15):
+    def __init__(self, camera_index=0, output_dir="output", detect_fps=15):
         self.camera_index = camera_index
         self.output_dir = output_dir
-        self.target_fps = target_fps
+        self.detect_fps = detect_fps
         os.makedirs(output_dir, exist_ok=True)
         self.headless = not bool(os.environ.get("DISPLAY"))
         self.model = YOLO("yolov8n.pt")
@@ -20,21 +20,20 @@ class PersonDistanceDetector:
         self.source_fps = int(self.cap.get(cv2.CAP_PROP_FPS)) or 30
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.frame_skip = max(1, self.source_fps // self.target_fps)
-        self.effective_fps = self.source_fps / self.frame_skip
+        self.detect_interval = 1.0 / self.detect_fps
+        self.last_detect_time = 0.0
         self.recording_path = f"{output_dir}/webcam_recording.mp4"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.out = cv2.VideoWriter(self.recording_path, fourcc, self.effective_fps, (self.width, self.height))
+        self.out = cv2.VideoWriter(self.recording_path, fourcc, self.source_fps, (self.width, self.height))
         self.pre_event_seconds = 5
         self.post_event_seconds = 5
-        self.frame_buffer = deque(maxlen=int(self.pre_event_seconds * self.effective_fps))
+        self.frame_buffer = deque(maxlen=int(self.pre_event_seconds * self.source_fps))
         self.person_distance_history = {}
-        self.alert_cooldown = {}
+        self.alert_cooldown_time = {}
         self.alerts_log = []
-        self.processed_frame_count = 0
         self.track_id_counter = 0
         self.tracks = {}
-        self.post_event_frames_remaining = 0
+        self.post_event_end_time = 0.0
         self.current_alert_distance = None
         self.current_alert_threshold = None
 
@@ -81,41 +80,38 @@ class PersonDistanceDetector:
         self.tracks = new_tracks
         return self.tracks
 
-    def detect_distance_crossing(self, pid, distance):
+    def detect_distance_crossing(self, pid, distance, now):
         if pid not in self.person_distance_history:
             self.person_distance_history[pid] = deque(maxlen=10)
-            self.alert_cooldown[pid] = -100
+            self.alert_cooldown_time[pid] = 0.0
         hist = self.person_distance_history[pid]
         prev = hist[-1] if len(hist) > 0 else 999
         hist.append(distance)
         for t in [5, 10]:
             if (prev > t and distance <= t) or (prev == 999 and distance <= t):
-                if self.processed_frame_count - self.alert_cooldown[pid] > self.effective_fps:
-                    self.alert_cooldown[pid] = self.processed_frame_count
+                if now - self.alert_cooldown_time[pid] > 1.0:
+                    self.alert_cooldown_time[pid] = now
                     return t
         return None
 
-    def log_alert(self, distance, threshold):
+    def log_alert(self, distance, threshold, now):
         self.alerts_log.append({
-            "processed_frame": self.processed_frame_count,
-            "time_sec": round(self.processed_frame_count / self.effective_fps, 2),
+            "time_sec": round(now, 2),
             "distance": round(distance, 2),
             "threshold": threshold
         })
 
-    def process_frame(self, frame):
+    def process_detection(self, frame, now):
         results = self.model(frame, conf=0.5, classes=[0])
         boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes is not None else []
         tracks = self.assign_ids(boxes)
-        alert_triggered = False
         for pid, box in tracks.items():
             x1, y1, x2, y2 = map(int, box)
             dist = self.estimate_distance(box)
-            crossed = self.detect_distance_crossing(pid, dist)
+            crossed = self.detect_distance_crossing(pid, dist, now)
             if crossed:
-                self.log_alert(dist, crossed)
-                alert_triggered = True
-                self.post_event_frames_remaining = int(self.post_event_seconds * self.effective_fps)
+                self.log_alert(dist, crossed, now)
+                self.post_event_end_time = now + self.post_event_seconds
                 self.current_alert_distance = dist
                 self.current_alert_threshold = crossed
             color = (0, 255, 0)
@@ -125,48 +121,43 @@ class PersonDistanceDetector:
                 color = (0, 0, 255)
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(frame, f"{dist:.1f}m", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-        return frame, alert_triggered
+        return frame
 
     def save_evidence_clip(self):
-        if len(self.frame_buffer) == 0 or self.current_alert_distance is None:
+        if len(self.frame_buffer) == 0 or self.current_alert_threshold is None:
             return
         output_path = f"{self.output_dir}/evidence_{int(time.time())}.mp4"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, self.effective_fps, (self.width, self.height))
+        out = cv2.VideoWriter(output_path, fourcc, self.source_fps, (self.width, self.height))
         for frame in self.frame_buffer:
-            if self.current_alert_threshold:
-                cv2.putText(frame, "ALERT", (10, self.height - 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+            cv2.putText(frame, "ALERT", (10, self.height - 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
             out.write(frame)
         out.release()
-        self.current_alert_distance = None
         self.current_alert_threshold = None
+        self.current_alert_distance = None
 
     def run(self):
-        raw_frame_count = 0
+        start_time = time.time()
         try:
             while True:
                 ret, frame = self.cap.read()
                 if not ret:
                     break
-                raw_frame_count += 1
-                if (raw_frame_count - 1) % self.frame_skip != 0:
-                    continue
-                self.processed_frame_count += 1
-                frame, alert_triggered = self.process_frame(frame)
+                now = time.time() - start_time
                 self.frame_buffer.append(frame.copy())
-                if self.post_event_frames_remaining > 0:
-                    self.out.write(frame)
-                    self.post_event_frames_remaining -= 1
-                    if self.post_event_frames_remaining == 0:
-                        self.save_evidence_clip()
+                if now - self.last_detect_time >= self.detect_interval:
+                    self.last_detect_time = now
+                    frame = self.process_detection(frame, now)
+                self.out.write(frame)
+                if self.post_event_end_time and now >= self.post_event_end_time:
+                    self.save_evidence_clip()
+                    self.post_event_end_time = 0.0
                 if not self.headless:
                     cv2.imshow("Detector", frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
         except KeyboardInterrupt:
-            if self.post_event_frames_remaining > 0:
-                for frame in self.frame_buffer:
-                    self.out.write(frame)
+            pass
         self.cap.release()
         self.out.release()
         if not self.headless:
@@ -175,5 +166,5 @@ class PersonDistanceDetector:
             json.dump(self.alerts_log, f, indent=2)
 
 if __name__ == "__main__":
-    detector = PersonDistanceDetector(camera_index=0, output_dir="output", target_fps=15)
+    detector = PersonDistanceDetector(camera_index=0, output_dir="output", detect_fps=15)
     detector.run()
