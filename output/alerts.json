@@ -1,1 +1,38 @@
-[]
+[
+  {
+    "processed_frame": 6,
+    "time_sec": 0.4,
+    "distance": 3.84,
+    "threshold": 5
+  },
+  {
+    "processed_frame": 7,
+    "time_sec": 0.47,
+    "distance": 4.61,
+    "threshold": 5
+  },
+  {
+    "processed_frame": 8,
+    "time_sec": 0.53,
+    "distance": 5.95,
+    "threshold": 10
+  },
+  {
+    "processed_frame": 15,
+    "time_sec": 1.0,
+    "distance": 5.41,
+    "threshold": 10
+  },
+  {
+    "processed_frame": 16,
+    "time_sec": 1.07,
+    "distance": 6.05,
+    "threshold": 10
+  },
+  {
+    "processed_frame": 18,
+    "time_sec": 1.2,
+    "distance": 3.84,
+    "threshold": 5
+  }
+]
