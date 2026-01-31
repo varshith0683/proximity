@@ -1,17 +1,1 @@
-[
-  {
-    "time_sec": 38.17,
-    "distance": 3.84,
-    "threshold": 5
-  },
-  {
-    "time_sec": 41.51,
-    "distance": 6.04,
-    "threshold": 10
-  },
-  {
-    "time_sec": 51.84,
-    "distance": 5.1,
-    "threshold": 10
-  }
-]
+[]
