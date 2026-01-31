@@ -48,6 +48,7 @@ class PersonDistanceDetector:
         self.event_frames_remaining = 0
         self.event_index = 0
         self.event_latch = 0
+        self.saved_evidence_files = []
 
         self.frame_count = 0
         self.track_id_counter = 0
@@ -105,6 +106,16 @@ class PersonDistanceDetector:
             self.alert_cooldown[pid] = -100
 
         hist = self.person_distance_history[pid]
+
+        if len(hist) == 0:
+            hist.append(distance)
+            for t in [5, 10]:
+                if distance <= t:
+                    if self.frame_count - self.alert_cooldown[pid] > self.effective_fps:
+                        self.alert_cooldown[pid] = self.frame_count
+                        return t
+            return None
+
         hist.append(distance)
 
         if len(hist) < 2:
@@ -112,7 +123,7 @@ class PersonDistanceDetector:
 
         prev, curr = hist[-2], hist[-1]
 
-        for t in [10, 5]:
+        for t in [5, 10]:
             if prev > t and curr <= t:
                 if self.frame_count - self.alert_cooldown[pid] > self.effective_fps:
                     self.alert_cooldown[pid] = self.frame_count
@@ -121,7 +132,7 @@ class PersonDistanceDetector:
 
     def log_alert(self, distance, threshold):
         self.alerts_log.append({
-            "time_sec": self.frame_count / self.effective_fps,
+            "time_sec": round(self.frame_count / self.effective_fps, 2),
             "distance": round(distance, 2),
             "threshold": threshold
         })
@@ -134,9 +145,12 @@ class PersonDistanceDetector:
             self.event_writer = cv2.VideoWriter(filename, fourcc, self.target_fps, (self.width, self.height))
             for f in self.frame_buffer:
                 self.event_writer.write(f)
-            self.event_frames_remaining = self.effective_fps * self.post_event_seconds
+            self.event_writer.write(frame)
+            self.event_frames_remaining = self.effective_fps * self.post_event_seconds - 1
             self.event_active = True
             self.event_index += 1
+            self.saved_evidence_files.append(filename)
+            return
 
         if self.event_active:
             self.event_writer.write(frame)
@@ -200,6 +214,10 @@ class PersonDistanceDetector:
         except KeyboardInterrupt:
             pass
 
+        if self.event_active and self.event_writer is not None:
+            self.event_writer.release()
+            self.event_active = False
+
         self.cap.release()
         self.out.release()
         if not self.headless:
@@ -207,6 +225,14 @@ class PersonDistanceDetector:
 
         with open(f"{self.output_dir}/alerts.json", "w") as f:
             json.dump(self.alerts_log, f, indent=2)
+
+        print(f"Alerts saved: {self.output_dir}/alerts.json ({len(self.alerts_log)} alerts)")
+        if self.saved_evidence_files:
+            print(f"Evidence files saved:")
+            for filepath in self.saved_evidence_files:
+                print(f"  {filepath}")
+        else:
+            print("No evidence files were recorded.")
 
 if __name__ == "__main__":
     detector = PersonDistanceDetector(camera_index=0, output_dir="output", target_fps=30)
