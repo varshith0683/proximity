@@ -8,13 +8,10 @@ import signal
 
 class PersonDistanceDetector:
     def __init__(self, camera_index=0, output_dir="output"):
-        print("[INFO] System starting")
-
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
         self.model = YOLO("yolov8n.pt")
-        print("[INFO] YOLO model loaded")
 
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -23,41 +20,45 @@ class PersonDistanceDetector:
         if not self.cap.isOpened():
             raise RuntimeError("Camera could not be opened")
 
-        print("[INFO] Camera opened")
-
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        self.target_fps = 30
-        self.frame_interval = 1.0 / self.target_fps
-
         self.recording_path = os.path.join(output_dir, "webcam_recording.mp4")
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self.out = cv2.VideoWriter(
-            self.recording_path,
-            fourcc,
-            self.target_fps,
-            (self.width, self.height)
-        )
 
         self.pre_event_seconds = 5
         self.post_event_seconds = 5
-        self.buffer_size = int(self.pre_event_seconds * self.target_fps)
-        self.frame_buffer = deque(maxlen=self.buffer_size)
+        self.frame_buffer = deque()
 
         self.alerts = []
         self.last_distance = {}
         self.stop = False
 
-        self.fps_log_interval = 2
-        self.frame_count = 0
-        self.fps_last_time = time.time()
-
         signal.signal(signal.SIGINT, self.shutdown)
 
+        self.measured_fps = self.measure_fps()
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        self.out = cv2.VideoWriter(
+            self.recording_path,
+            fourcc,
+            self.measured_fps,
+            (self.width, self.height)
+        )
+        self.frame_interval = 1.0 / self.measured_fps
+        self.buffer_size = int(self.pre_event_seconds * self.measured_fps)
+        self.frame_buffer = deque(maxlen=self.buffer_size)
+
     def shutdown(self, *args):
-        print("\n[INFO] Shutdown signal received")
         self.stop = True
+
+    def measure_fps(self, duration=3):
+        start = time.time()
+        frames = 0
+        while time.time() - start < duration:
+            ret, _ = self.cap.read()
+            if ret:
+                frames += 1
+        elapsed = time.time() - start
+        return max(frames / elapsed, 0.1)
 
     def estimate_distance(self, box):
         x1, y1, x2, y2 = box
@@ -83,11 +84,12 @@ class PersonDistanceDetector:
 
         try:
             while not self.stop:
-                frame_start = time.time()
                 ret, frame = self.cap.read()
                 if not ret:
-                    print("[WARN] Camera frame read failed")
                     break
+
+                now = time.time()
+                elapsed = now - start_time
 
                 results = self.model(frame, conf=0.5, classes=[0], verbose=False)
                 boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes is not None else []
@@ -115,8 +117,6 @@ class PersonDistanceDetector:
                     )
 
                     if crossed:
-                        elapsed = time.time() - start_time
-                        print(f"[ALERT] Person crossed {crossed}m at {elapsed:.2f}s (distance={dist:.2f}m)")
                         self.alerts.append({
                             "time_sec": float(round(elapsed, 2)),
                             "distance": float(round(dist, 2)),
@@ -127,20 +127,11 @@ class PersonDistanceDetector:
 
                 self.frame_buffer.append(frame.copy())
 
-                now = time.time()
                 while last_written_time + self.frame_interval <= now:
                     self.out.write(frame)
                     last_written_time += self.frame_interval
 
-                frame_end = time.time()
-                self.frame_count += 1
-                if frame_end - self.fps_last_time >= self.fps_log_interval:
-                    fps = self.frame_count / (frame_end - self.fps_last_time)
-                    print(f"[INFO] Approx. processing FPS: {fps:.2f}")
-                    self.fps_last_time = frame_end
-                    self.frame_count = 0
-
-                if active_event and (time.time() - start_time) >= post_event_end:
+                if active_event and elapsed >= post_event_end:
                     self.save_evidence()
                     active_event = None
 
@@ -155,26 +146,21 @@ class PersonDistanceDetector:
         path = os.path.join(self.output_dir, filename)
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(path, fourcc, self.target_fps, (self.width, self.height))
+        writer = cv2.VideoWriter(path, fourcc, self.measured_fps, (self.width, self.height))
 
         for frame in self.frame_buffer:
             writer.write(frame)
 
         writer.release()
         self.frame_buffer.clear()
-        print(f"[INFO] Evidence saved: {path}")
 
     def cleanup(self):
-        print("[INFO] Releasing resources")
         self.cap.release()
         self.out.release()
 
         alerts_path = os.path.join(self.output_dir, "alerts.json")
         with open(alerts_path, "w") as f:
             json.dump(self.alerts, f, indent=2)
-
-        print(f"[INFO] Alerts written to {alerts_path}")
-        print("[INFO] System stopped cleanly")
 
 if __name__ == "__main__":
     detector = PersonDistanceDetector(camera_index=0, output_dir="output")
