@@ -8,6 +8,7 @@ import signal
 
 class PersonDistanceDetector:
     def __init__(self, camera_index=0, output_dir="output"):
+        print("[INFO] System started")
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
@@ -19,6 +20,7 @@ class PersonDistanceDetector:
 
         if not self.cap.isOpened():
             raise RuntimeError("Camera could not be opened")
+        print("[INFO] Camera activated")
 
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -48,6 +50,7 @@ class PersonDistanceDetector:
         self.frame_buffer = deque(maxlen=self.buffer_size)
 
     def shutdown(self, *args):
+        print("[INFO] Shutdown signal received")
         self.stop = True
 
     def measure_fps(self, duration=3):
@@ -117,6 +120,7 @@ class PersonDistanceDetector:
                     )
 
                     if crossed:
+                        print(f"[ALERT] Person crossed {crossed}m at {elapsed:.2f}s (distance={dist:.2f}m)")
                         self.alerts.append({
                             "time_sec": float(round(elapsed, 2)),
                             "distance": float(round(dist, 2)),
@@ -153,6 +157,7 @@ class PersonDistanceDetector:
 
         writer.release()
         self.frame_buffer.clear()
+        print(f"[INFO] Evidence captured: {path}")
 
     def cleanup(self):
         self.cap.release()
