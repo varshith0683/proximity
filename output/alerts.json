@@ -1,38 +1,32 @@
 [
   {
-    "processed_frame": 6,
-    "time_sec": 0.4,
-    "distance": 3.84,
-    "threshold": 5
-  },
-  {
     "processed_frame": 7,
     "time_sec": 0.47,
-    "distance": 4.61,
+    "distance": 3.85,
     "threshold": 5
   },
   {
-    "processed_frame": 8,
-    "time_sec": 0.53,
-    "distance": 5.95,
+    "processed_frame": 9,
+    "time_sec": 0.6,
+    "distance": 6.4,
     "threshold": 10
   },
   {
-    "processed_frame": 15,
-    "time_sec": 1.0,
-    "distance": 5.41,
+    "processed_frame": 12,
+    "time_sec": 0.8,
+    "distance": 5.32,
     "threshold": 10
   },
   {
-    "processed_frame": 16,
-    "time_sec": 1.07,
-    "distance": 6.05,
+    "processed_frame": 13,
+    "time_sec": 0.87,
+    "distance": 5.83,
     "threshold": 10
   },
   {
-    "processed_frame": 18,
-    "time_sec": 1.2,
-    "distance": 3.84,
+    "processed_frame": 14,
+    "time_sec": 0.93,
+    "distance": 3.98,
     "threshold": 5
   }
 ]
