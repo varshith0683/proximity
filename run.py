@@ -1,16 +1,144 @@
 import cv2
 import numpy as np
 import json
+import threading
+import time
+import os
 from ultralytics import YOLO
 from collections import deque
 from datetime import datetime
-import os
-import psutil
-import time
+from queue import Queue, Empty
+
+
+class CaptureThread(threading.Thread):
+    def __init__(self, camera_index, width, height, fps):
+        super().__init__(daemon=True)
+        self.camera_index = camera_index
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.cap = cv2.VideoCapture(camera_index)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_FPS, fps)
+
+        self.buffer = deque(maxlen=fps * 6)
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.frame_index = 0
+        self.latest_frame = None
+        self.has_new_frame = threading.Event()
+
+    def run(self):
+        while not self.stop_event.is_set():
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+            self.frame_index += 1
+            with self.lock:
+                self.buffer.append((self.frame_index, frame))
+                self.latest_frame = (self.frame_index, frame)
+            self.has_new_frame.set()
+
+    def get_latest(self):
+        self.has_new_frame.wait(timeout=1.0)
+        self.has_new_frame.clear()
+        with self.lock:
+            return self.latest_frame
+
+    def get_buffer_snapshot(self):
+        with self.lock:
+            return list(self.buffer)
+
+    def stop(self):
+        self.stop_event.set()
+        self.join(timeout=2.0)
+        self.cap.release()
+
+
+class EvidenceWriter(threading.Thread):
+    def __init__(self, capture_thread, output_dir, fps, width, height):
+        super().__init__(daemon=True)
+        self.capture_thread = capture_thread
+        self.output_dir = output_dir
+        self.fps = fps
+        self.width = width
+        self.height = height
+
+        self.trigger_event = threading.Event()
+        self.trigger_frame_index = 0
+        self.stop_event = threading.Event()
+        self.clip_index = 0
+        self.saved_files = []
+
+        self.pre_seconds = 5
+        self.post_seconds = 5
+
+    def trigger(self, frame_index):
+        self.trigger_frame_index = frame_index
+        self.trigger_event.set()
+
+    def run(self):
+        while not self.stop_event.is_set():
+            if not self.trigger_event.wait(timeout=0.5):
+                continue
+            self.trigger_event.clear()
+            if self.stop_event.is_set():
+                break
+            self._write_clip()
+
+    def _write_clip(self):
+        self.clip_index += 1
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = f"{self.output_dir}/evidence_clip_{ts}_{self.clip_index}.mp4"
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(output_path, fourcc, self.fps, (self.width, self.height))
+
+        pre_frames_needed = self.fps * self.pre_seconds
+        post_frames_needed = self.fps * self.post_seconds
+        alert_idx = self.trigger_frame_index
+
+        snapshot = self.capture_thread.get_buffer_snapshot()
+
+        pre_frames = []
+        for idx, frame in snapshot:
+            if idx <= alert_idx:
+                pre_frames.append((idx, frame))
+
+        if len(pre_frames) > pre_frames_needed:
+            pre_frames = pre_frames[-pre_frames_needed:]
+
+        for idx, frame in pre_frames:
+            writer.write(frame)
+
+        post_written = 0
+        last_written_idx = alert_idx
+        while post_written < post_frames_needed and not self.stop_event.is_set():
+            snapshot = self.capture_thread.get_buffer_snapshot()
+            for idx, frame in snapshot:
+                if idx <= last_written_idx:
+                    continue
+                writer.write(frame)
+                last_written_idx = idx
+                post_written += 1
+                if post_written >= post_frames_needed:
+                    break
+            if post_written < post_frames_needed:
+                time.sleep(0.05)
+
+        writer.release()
+        self.saved_files.append(output_path)
+        print(f"Evidence clip saved: {output_path}")
+
+    def stop(self):
+        self.stop_event.set()
+        self.trigger_event.set()
+        self.join(timeout=3.0)
+
 
 class PersonDistanceDetector:
     def __init__(self, camera_index=0, output_dir="output", target_fps=30):
-        self.camera_index = camera_index
         self.output_dir = output_dir
         self.target_fps = target_fps
         os.makedirs(output_dir, exist_ok=True)
@@ -19,38 +147,30 @@ class PersonDistanceDetector:
 
         self.model = YOLO("yolov8n.pt")
 
-        self.cap = cv2.VideoCapture(camera_index)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        probe = cv2.VideoCapture(camera_index)
+        probe.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        probe.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.width = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        probe.release()
 
-        self.source_fps = int(self.cap.get(cv2.CAP_PROP_FPS)) or 30
-        self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.frame_skip = max(1, self.source_fps // self.target_fps)
-        self.effective_fps = self.target_fps
+        self.capture_thread = CaptureThread(camera_index, self.width, self.height, target_fps)
+
+        self.evidence_writer = EvidenceWriter(
+            self.capture_thread, output_dir, target_fps, self.width, self.height
+        )
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         self.out = cv2.VideoWriter(
             f"{output_dir}/webcam_recording.mp4",
-            fourcc, self.target_fps, (self.width, self.height)
+            fourcc, target_fps, (self.width, self.height)
         )
 
         self.person_distance_history = {}
         self.alert_cooldown = {}
         self.alerts_log = []
 
-        self.pre_event_seconds = 5
-        self.post_event_seconds = 5
-
-        self.frame_buffer = deque(maxlen=self.effective_fps * self.pre_event_seconds)
-        self.event_active = False
-        self.event_writer = None
-        self.event_frames_remaining = 0
-        self.event_index = 0
-        self.event_latch = 0
-        self.saved_evidence_files = []
-
-        self.frame_count = 0
+        self.processed_frame_count = 0
         self.track_id_counter = 0
         self.tracks = {}
 
@@ -111,56 +231,31 @@ class PersonDistanceDetector:
             hist.append(distance)
             for t in [5, 10]:
                 if distance <= t:
-                    if self.frame_count - self.alert_cooldown[pid] > self.effective_fps:
-                        self.alert_cooldown[pid] = self.frame_count
+                    if self.processed_frame_count - self.alert_cooldown[pid] > self.target_fps:
+                        self.alert_cooldown[pid] = self.processed_frame_count
                         return t
             return None
 
         hist.append(distance)
-
-        if len(hist) < 2:
-            return None
-
         prev, curr = hist[-2], hist[-1]
 
         for t in [5, 10]:
             if prev > t and curr <= t:
-                if self.frame_count - self.alert_cooldown[pid] > self.effective_fps:
-                    self.alert_cooldown[pid] = self.frame_count
+                if self.processed_frame_count - self.alert_cooldown[pid] > self.target_fps:
+                    self.alert_cooldown[pid] = self.processed_frame_count
                     return t
         return None
 
-    def log_alert(self, distance, threshold):
+    def log_alert(self, distance, threshold, capture_frame_index):
         self.alerts_log.append({
-            "time_sec": round(self.frame_count / self.effective_fps, 2),
+            "processed_frame": self.processed_frame_count,
+            "capture_frame_index": capture_frame_index,
+            "time_sec": round(self.processed_frame_count / self.target_fps, 2),
             "distance": round(distance, 2),
             "threshold": threshold
         })
 
-    def handle_event_recording(self, frame, event_triggered):
-        if event_triggered and not self.event_active:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{self.output_dir}/evidence_{ts}_{self.event_index}.mp4"
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            self.event_writer = cv2.VideoWriter(filename, fourcc, self.target_fps, (self.width, self.height))
-            for f in self.frame_buffer:
-                self.event_writer.write(f)
-            self.event_writer.write(frame)
-            self.event_frames_remaining = self.effective_fps * self.post_event_seconds - 1
-            self.event_active = True
-            self.event_index += 1
-            self.saved_evidence_files.append(filename)
-            return
-
-        if self.event_active:
-            self.event_writer.write(frame)
-            self.event_frames_remaining -= 1
-            if self.event_frames_remaining <= 0:
-                self.event_writer.release()
-                self.event_active = False
-
-    def process_frame(self, frame):
-        event_triggered = False
+    def process_frame(self, frame, capture_frame_index):
         results = self.model(frame, conf=0.5, classes=[0])
 
         if results[0].boxes is None:
@@ -168,14 +263,16 @@ class PersonDistanceDetector:
 
         boxes = results[0].boxes.xyxy.cpu().numpy()
         tracks = self.assign_ids(boxes)
+        alert_triggered = False
+        alert_capture_idx = capture_frame_index
 
         for pid, box in tracks.items():
             x1, y1, x2, y2 = map(int, box)
             dist = self.estimate_distance(box)
             crossed = self.detect_distance_crossing(pid, dist)
             if crossed:
-                self.log_alert(dist, crossed)
-                self.event_latch = self.effective_fps
+                self.log_alert(dist, crossed, capture_frame_index)
+                alert_triggered = True
             if dist <= 5:
                 color = (0, 0, 255)
             elif dist <= 10:
@@ -185,27 +282,32 @@ class PersonDistanceDetector:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(frame, f"{dist:.1f}m", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-        if self.event_latch > 0:
-            event_triggered = True
-            self.event_latch -= 1
-
-        return frame, event_triggered
+        return frame, alert_triggered
 
     def run(self):
+        self.capture_thread.start()
+        self.evidence_writer.start()
+
+        last_capture_idx = 0
+
         try:
             while True:
-                ret, frame = self.cap.read()
-                if not ret:
-                    break
-
-                self.frame_count += 1
-                if (self.frame_count - 1) % self.frame_skip != 0:
+                result = self.capture_thread.get_latest()
+                if result is None:
                     continue
 
-                self.frame_buffer.append(frame.copy())
-                frame, event_triggered = self.process_frame(frame)
+                capture_idx, raw_frame = result
+                if capture_idx == last_capture_idx:
+                    continue
+                last_capture_idx = capture_idx
+
+                self.processed_frame_count += 1
+                frame = raw_frame.copy()
+                frame, alert_triggered = self.process_frame(frame, capture_idx)
                 self.out.write(frame)
-                self.handle_event_recording(frame, event_triggered)
+
+                if alert_triggered:
+                    self.evidence_writer.trigger(capture_idx)
 
                 if not self.headless:
                     cv2.imshow("Detector", frame)
@@ -214,25 +316,24 @@ class PersonDistanceDetector:
         except KeyboardInterrupt:
             pass
 
-        if self.event_active and self.event_writer is not None:
-            self.event_writer.release()
-            self.event_active = False
-
-        self.cap.release()
+        self.evidence_writer.stop()
+        self.capture_thread.stop()
         self.out.release()
+
         if not self.headless:
             cv2.destroyAllWindows()
 
         with open(f"{self.output_dir}/alerts.json", "w") as f:
             json.dump(self.alerts_log, f, indent=2)
-
         print(f"Alerts saved: {self.output_dir}/alerts.json ({len(self.alerts_log)} alerts)")
-        if self.saved_evidence_files:
-            print(f"Evidence files saved:")
-            for filepath in self.saved_evidence_files:
-                print(f"  {filepath}")
+
+        if self.evidence_writer.saved_files:
+            print(f"Evidence clips saved: {len(self.evidence_writer.saved_files)}")
+            for f in self.evidence_writer.saved_files:
+                print(f"  {f}")
         else:
-            print("No evidence files were recorded.")
+            print("No evidence clips recorded.")
+
 
 if __name__ == "__main__":
     detector = PersonDistanceDetector(camera_index=0, output_dir="output", target_fps=30)
