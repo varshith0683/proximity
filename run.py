@@ -10,15 +10,16 @@ from collections import deque
 
 class PersonDistanceDetector:
     def __init__(self, camera_index=0, output_dir="output"):
-        print("[INFO] System started")
+        print("[SYSTEM] System started")
 
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-        # ---------------- YOLO ----------------
+        print("[MODEL] Loading YOLOv8 model...")
         self.model = YOLO("yolov8n.pt")
+        print("[MODEL] YOLOv8 model loaded")
 
-        # ---------------- CAMERA ----------------
+        print("[CAMERA] Connecting to camera")
         self.cap = cv2.VideoCapture(camera_index)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
@@ -26,13 +27,14 @@ class PersonDistanceDetector:
         if not self.cap.isOpened():
             raise RuntimeError("Camera could not be opened")
 
-        print("[INFO] Camera activated")
+        print("[CAMERA] Camera connected")
 
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        # ---------------- UART (USB-TTL) ----------------
-        self.serial_port = "/dev/ttySC1"   # CHANGE IF REQUIRED
+        print(f"[CAMERA] Stream resolution: {self.width}x{self.height}")
+
+        self.serial_port = "/dev/ttySC1"
         self.baud_rate = 115200
 
         try:
@@ -42,12 +44,11 @@ class PersonDistanceDetector:
                 timeout=0,
                 write_timeout=0
             )
-            print(f"[INFO] UART opened on {self.serial_port}")
+            print(f"[UART] Connected on {self.serial_port} @ {self.baud_rate}")
         except Exception as e:
-            print(f"[WARN] UART not available: {e}")
+            print(f"[UART] WARNING: UART not available ({e})")
             self.ser = None
 
-        # ---------------- RECORDING ----------------
         self.recording_path = os.path.join(output_dir, "webcam_recording.mp4")
         self.pre_event_seconds = 5
         self.post_event_seconds = 5
@@ -58,10 +59,11 @@ class PersonDistanceDetector:
 
         signal.signal(signal.SIGINT, self.shutdown)
 
-        # ---------------- FPS CONTROL ----------------
+        print("[SYSTEM] Measuring input FPS...")
         self.measured_fps = self.measure_fps()
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        print(f"[SYSTEM] Measured FPS: {self.measured_fps:.2f}")
 
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self.out = cv2.VideoWriter(
             self.recording_path,
             fourcc,
@@ -73,10 +75,8 @@ class PersonDistanceDetector:
         self.buffer_size = int(self.pre_event_seconds * self.measured_fps)
         self.frame_buffer = deque(maxlen=self.buffer_size)
 
-    # ------------------------------------------------
-
     def shutdown(self, *args):
-        print("[INFO] Shutdown signal received")
+        print("[SYSTEM] Shutdown signal received")
         self.stop = True
 
     def measure_fps(self, duration=3):
@@ -96,7 +96,6 @@ class PersonDistanceDetector:
             return 999.0
         return (800 * 1.7) / h
 
-    # ---------------- THRESHOLD CROSSING ----------------
     def detect_crossing(self, pid, dist):
         prev = self.last_distance.get(pid, 999.0)
         self.last_distance[pid] = dist
@@ -107,17 +106,18 @@ class PersonDistanceDetector:
             return 2
         return None
 
-    # ---------------- UART SEND ----------------
     def send_uart_signal(self, value):
         if self.ser is None:
             return
         try:
             self.ser.write(f"{value}\n".encode("utf-8"))
+            print(f"[UART] Sent signal: {value}")
         except Exception as e:
-            print(f"[WARN] UART write failed: {e}")
+            print(f"[UART] WARNING: Write failed ({e})")
 
-    # ---------------- MAIN LOOP ----------------
     def run(self):
+        print("[SYSTEM] Processing started")
+
         start_time = time.time()
         last_written_time = start_time
         active_event = None
@@ -128,6 +128,8 @@ class PersonDistanceDetector:
                 ret, frame = self.cap.read()
                 if not ret:
                     break
+
+                print("[FRAME] Frame received")
 
                 now = time.time()
                 elapsed = now - start_time
@@ -140,36 +142,17 @@ class PersonDistanceDetector:
                 )
 
                 for i, box in enumerate(boxes):
-                    x1, y1, x2, y2 = map(int, box)
                     dist = self.estimate_distance(box)
                     crossed = self.detect_crossing(i, dist)
 
-                    color = (0, 255, 0)
-                    if dist <= 4:
-                        color = (0, 165, 255)
-                    if dist <= 2:
-                        color = (0, 0, 255)
-
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(
-                        frame,
-                        f"{dist:.1f}m",
-                        (x1, y1 - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        color,
-                        2
-                    )
-
-                    # -------- EVENT + UART --------
                     if crossed:
                         print(
-                            f"[ALERT] Person crossed {crossed}m at "
-                            f"{elapsed:.2f}s (distance={dist:.2f}m)"
+                            f"[EVENT] Person crossed {crossed}m | "
+                            f"Distance: {dist:.2f}m | "
+                            f"Time: {elapsed:.2f}s"
                         )
 
                         self.send_uart_signal(100)
-                        print(f"[UART] Sent 100 ({crossed}m crossed)")
 
                         self.alerts.append({
                             "time_sec": round(elapsed, 2),
@@ -193,8 +176,6 @@ class PersonDistanceDetector:
         finally:
             self.cleanup()
 
-    # ------------------------------------------------
-
     def save_evidence(self):
         if not self.frame_buffer:
             return
@@ -215,9 +196,12 @@ class PersonDistanceDetector:
 
         writer.release()
         self.frame_buffer.clear()
-        print(f"[INFO] Evidence captured: {path}")
+
+        print(f"[EVIDENCE] Saved: {path}")
 
     def cleanup(self):
+        print("[SYSTEM] Cleaning up resources")
+
         self.cap.release()
         self.out.release()
 
@@ -227,6 +211,8 @@ class PersonDistanceDetector:
         alerts_path = os.path.join(self.output_dir, "alerts.json")
         with open(alerts_path, "w") as f:
             json.dump(self.alerts, f, indent=2)
+
+        print("[SYSTEM] Shutdown complete")
 
 
 if __name__ == "__main__":
