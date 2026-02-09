@@ -54,9 +54,9 @@ class PersonDistanceDetector:
             self.ser = None
 
         # ---------------- RECORDING ----------------
-        self.recording_path = os.path.join(output_dir, "rtsp_recording.mp4")
-        self.pre_event_seconds = 5
-        self.post_event_seconds = 5
+        # self.recording_path = os.path.join(output_dir, "rtsp_recording.mp4")
+        # self.pre_event_seconds = 5
+        # self.post_event_seconds = 5
 
         self.alerts = []
         self.last_distance = {}
@@ -68,17 +68,17 @@ class PersonDistanceDetector:
         self.measured_fps = self.measure_fps()
         print(f"[SYSTEM] Measured FPS: {self.measured_fps:.2f}")
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self.out = cv2.VideoWriter(
-            self.recording_path,
-            fourcc,
-            self.measured_fps,
-            (self.width, self.height)
-        )
+        # fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        # self.out = cv2.VideoWriter(
+        #     self.recording_path,
+        #     fourcc,
+        #     self.measured_fps,
+        #     (self.width, self.height)
+        # )
 
-        self.frame_interval = 1.0 / self.measured_fps
-        self.buffer_size = int(self.pre_event_seconds * self.measured_fps)
-        self.frame_buffer = deque(maxlen=self.buffer_size)
+        # self.frame_interval = 1.0 / self.measured_fps
+        # self.buffer_size = int(self.pre_event_seconds * self.measured_fps)
+        # self.frame_buffer = deque(maxlen=self.buffer_size)
 
     # ------------------------------------------------
 
@@ -109,11 +109,12 @@ class PersonDistanceDetector:
         prev = self.last_distance.get(pid, 999.0)
         self.last_distance[pid] = dist
 
+        if prev > 8 and dist <= 8:
+            return 8
         if prev > 4 and dist <= 4:
             return 4
-        if prev > 2 and dist <= 2:
-            return 2
         return None
+
 
     # ---------------- UART SEND ----------------
     def send_uart_signal(self, value):
@@ -129,9 +130,9 @@ class PersonDistanceDetector:
     def run(self):
         print("[SYSTEM] Processing started")
         start_time = time.time()
-        last_written_time = start_time
-        active_event = None
-        post_event_end = 0
+        # last_written_time = start_time
+        # active_event = None
+        # post_event_end = 0
 
         try:
             while not self.stop:
@@ -163,7 +164,11 @@ class PersonDistanceDetector:
                             f"Time: {elapsed:.2f}s"
                         )
 
-                        self.send_uart_signal(100)
+                        if crossed == 4:
+                            self.send_uart_signal(200)
+                        elif crossed == 8:
+                            self.send_uart_signal(100)
+
 
                         self.alerts.append({
                             "time_sec": round(elapsed, 2),
@@ -171,52 +176,52 @@ class PersonDistanceDetector:
                             "threshold": crossed
                         })
 
-                        active_event = crossed
-                        post_event_end = elapsed + self.post_event_seconds
+                        # active_event = crossed
+                        # post_event_end = elapsed + self.post_event_seconds
 
-                self.frame_buffer.append(frame.copy())
+                # self.frame_buffer.append(frame.copy())
 
-                while last_written_time + self.frame_interval <= now:
-                    self.out.write(frame)
-                    last_written_time += self.frame_interval
+                # while last_written_time + self.frame_interval <= now:
+                #     self.out.write(frame)
+                #     last_written_time += self.frame_interval
 
-                if active_event and elapsed >= post_event_end:
-                    self.save_evidence()
-                    active_event = None
+                # if active_event and elapsed >= post_event_end:
+                #     self.save_evidence()
+                #     active_event = None
 
         finally:
             self.cleanup()
 
     # ------------------------------------------------
 
-    def save_evidence(self):
-        if not self.frame_buffer:
-            return
+    # def save_evidence(self):
+    #     if not self.frame_buffer:
+    #         return
 
-        filename = f"evidence_{int(time.time())}.mp4"
-        path = os.path.join(self.output_dir, filename)
+    #     filename = f"evidence_{int(time.time())}.mp4"
+    #     path = os.path.join(self.output_dir, filename)
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(
-            path,
-            fourcc,
-            self.measured_fps,
-            (self.width, self.height)
-        )
+    #     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    #     writer = cv2.VideoWriter(
+    #         path,
+    #         fourcc,
+    #         self.measured_fps,
+    #         (self.width, self.height)
+    #     )
 
-        for frame in self.frame_buffer:
-            writer.write(frame)
+    #     for frame in self.frame_buffer:
+    #         writer.write(frame)
 
-        writer.release()
-        self.frame_buffer.clear()
+    #     writer.release()
+    #     self.frame_buffer.clear()
 
-        print(f"[EVIDENCE] Saved: {path}")
+    #     print(f"[EVIDENCE] Saved: {path}")
 
     def cleanup(self):
         print("[SYSTEM] Cleaning up resources")
 
         self.cap.release()
-        self.out.release()
+        # self.out.release()
 
         if self.ser:
             self.ser.close()
